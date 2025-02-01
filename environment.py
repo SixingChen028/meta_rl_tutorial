@@ -11,8 +11,6 @@ class HarlowEnv(gym.Env):
     A Harlow environment.
     """
 
-    metadata = {'render_modes': ['human', 'rgb_array']}
-
     def __init__(
             self,
             num_trials = 20,
@@ -31,7 +29,7 @@ class HarlowEnv(gym.Env):
         self.set_random_seed(seed)
 
         # initialize action and observation spaces
-        self.action_space = Discrete(3) # action 0, 1, 2 means choosing left, choosing right, fixating, respectively
+        self.action_space = Discrete(3) # action 0, 1, 2 represent choosing left, choosing right, fixating, respectively
         self.observation_space = Box(low = -np.inf, high = np.inf, shape = (1,))
 
 
@@ -45,10 +43,11 @@ class HarlowEnv(gym.Env):
         self.stage = 'fixation' # set the initial stage to fixation
         self.correct_answer = np.random.randint(0, 2) # randomly pick a correct answer
 
-        obs = np.array([1.]) # use 1 to represent fixation stage
+        obs = np.array([0.]) # use 0 to represent fixation stage
         
         info = {
             'correct_answer': self.correct_answer, # include the correct answer in the information
+            'mask': self.get_action_mask()
         }
 
         return obs, info
@@ -73,7 +72,7 @@ class HarlowEnv(gym.Env):
                 
             self.stage = 'decision' # set the stage to decision
             
-            obs = np.array([0.]) # use 0 to represent decision stage 
+            obs = np.array([1.]) # use 1 to represent decision stage 
         
         # decision stage
         elif self.stage == 'decision':
@@ -87,7 +86,7 @@ class HarlowEnv(gym.Env):
             
             self.stage = 'fixation' # set the stage to fixation
             
-            obs = np.array([1.])
+            obs = np.array([0.])
         
         # end the episode
         if self.num_completed >= self.num_trials:
@@ -95,6 +94,7 @@ class HarlowEnv(gym.Env):
         
         info = {
             'correct_answer': self.correct_answer,
+            'mask': self.get_action_mask(),
         }
 
         return obs, reward, done, False, info
@@ -107,6 +107,18 @@ class HarlowEnv(gym.Env):
 
         if np.random.random() < self.flip_prob:
             self.correct_answer = 1 - self.correct_answer
+
+    
+    def get_action_mask(self):
+        """
+        Get action mask.
+
+        Valid actions are set to True while invalid actions are set to False
+        """
+
+        mask = np.ones((self.action_space.n,), dtype = bool)
+
+        return mask
     
 
     def set_random_seed(self, seed):
@@ -137,8 +149,6 @@ class MetaLearningWrapper(Wrapper):
     """
     A meta-RL wrapper.
     """
-
-    metadata = {'render_modes': ['human', 'rgb_array']}
 
     def __init__(self, env):
         """
@@ -218,19 +228,6 @@ if __name__ == '__main__':
     env = HarlowEnv()
     env = MetaLearningWrapper(env)
     
-
-    # model = RecurrentPPO(
-    #     policy = 'MlpLstmPolicy',
-    #     env = env,
-    #     verbose = 1,
-    #     learning_rate = 1e-4,
-    #     n_steps = 20,
-    #     gamma = 0.9,
-    #     ent_coef = 0.05,
-    # )
-
-    # model.learn(total_timesteps = 1000000)
-
     for i in range(50):
 
         obs, info = env.reset()
@@ -241,9 +238,9 @@ if __name__ == '__main__':
             action = env.action_space.sample()
             obs, reward, done, truncated, info = env.step(action)
             print(
-                'obs:', obs, '|',
-                'action:', action, '|',
                 'correct answer:', info['correct_answer'], '|',
+                'action:', action, '|',
                 'reward:', reward, '|',
+                'next obs:', obs, '|',
                 'done:', done, '|',
             )

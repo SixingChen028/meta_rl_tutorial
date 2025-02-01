@@ -45,7 +45,7 @@ if __name__ == '__main__':
 
     # set environment
     seeds = [random.randint(0, 1000) for _ in range(args.batch_size)]
-    env = gym.vector.AsyncVectorEnv([
+    env = gym.vector.SyncVectorEnv([
         lambda: MetaLearningWrapper(
             HarlowEnv(
                 num_trials = args.num_trials,
@@ -57,7 +57,7 @@ if __name__ == '__main__':
     ])
 
     # set net
-    net = LSTMRecurrentActorCriticPolicy(
+    net = SharedGRURecurrentActorCriticPolicy(
         feature_size = env.single_observation_space.shape[0],
         action_size = env.single_action_space.n,
         hidden_size = args.hidden_size,

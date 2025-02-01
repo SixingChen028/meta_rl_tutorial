@@ -32,6 +32,7 @@ class BatchMaskA2C:
         Initialize the trainer.
         """
 
+        # set parameters
         self.net = net
         self.env = env
         self.lr = lr
@@ -44,28 +45,31 @@ class BatchMaskA2C:
         self.entropy_schedule = entropy_schedule
         self.max_grad_norm = max_grad_norm
 
+        # set optimizer
         self.optimizer = torch.optim.Adam(net.parameters(), lr = self.lr)
+
+        # initialize replay buffer
+        self.buffer = BatchReplayBuffer()
     
 
-    def update_model(self, buffer):
+    def update_model(self):
         """
         Update model parameters.
 
-        Args:
-            buffer: a ReplayBuffer object. rollout includes:
-                masks: a torch.Tensor with shape (batch_size, seq_len).
-                    track ongoing batches. 1 for ongoing time steps and 0 for padding time steps.
-                rewards: a torch.Tensor with shape (batch_size, seq_len).
-                values: a torch.Tensor with shape (batch_size, seq_len + 1).
-                log_probs: a torch.Tensor with shape (batch_size, seq_len).
-                entropies: a torch.Tensor with shape (batch_size, seq_len).
+        Note: buffer: a ReplayBuffer object. buffer.rollout includes:
+            masks: a torch.Tensor with shape (batch_size, seq_len).
+                track ongoing batches. 1 for ongoing time steps and 0 for padding time steps.
+            rewards: a torch.Tensor with shape (batch_size, seq_len).
+            values: a torch.Tensor with shape (batch_size, seq_len + 1).
+            log_probs: a torch.Tensor with shape (batch_size, seq_len).
+            entropies: a torch.Tensor with shape (batch_size, seq_len).
 
         Returns:
             losses_batch: a dictionary. losses for the batch.
         """
 
         # pull data from buffer
-        masks, rewards, values, log_probs, entropies = buffer.pull('masks', 'rewards', 'values', 'log_probs', 'entropies')
+        masks, rewards, values, log_probs, entropies = self.buffer.pull('masks', 'rewards', 'values', 'log_probs', 'entropies')
 
         # compute returns and advantages
         returns, advantages = self.get_discounted_returns(rewards, values) # (batch_size, seq_len)
@@ -89,7 +93,7 @@ class BatchMaskA2C:
         # backpropagation
         self.optimizer.zero_grad()
         loss.backward()
-        if self.max_grad_norm is not None:
+        if self.max_grad_norm is not None: # clip gradient
             torch.nn.utils.clip_grad_norm_(self.net.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
@@ -112,18 +116,18 @@ class BatchMaskA2C:
             data_batch: a dictionary. training data for the batch.
         """
 
-        # initialize replay buffer
-        buffer = BatchReplayBuffer()
+        # reset replay buffer
+        self.buffer.reset()
                
         # initialize a trial
-        dones = np.zeros(self.batch_size, dtype = bool) # no reset once turned to 1
-        mask = torch.ones(self.batch_size)
+        dones = np.zeros(self.batch_size, dtype = bool) # no reset once turned to True
+        mask = torch.ones(self.batch_size) # mask finished episodes
         states = None
 
         # reset environment
         obs, info = self.env.reset()
-        obs = torch.Tensor(obs) # (batch_size, feature_dim)
-        action_mask = torch.tensor(np.stack(info['mask'])) # (batch_size, action_dim), bool
+        obs = torch.Tensor(obs) # (batch_size, feature_size)
+        action_mask = torch.tensor(np.stack(info['mask'])) # (batch_size, action_size), bool
 
         # iterate through a trial
         while not all(dones):
@@ -135,12 +139,12 @@ class BatchMaskA2C:
 
             # step the env
             obs, reward, done, truncated, info = self.env.step(action)
-            obs = torch.Tensor(obs) # (batch_size, feature_dim)
+            obs = torch.Tensor(obs) # (batch_size, feature_size)
             reward = torch.Tensor(reward) # (batch_size,)
-            action_mask = torch.tensor(np.stack(info['mask'])) # (batch_size, action_dim), bool
+            action_mask = torch.tensor(np.stack(info['mask'])) # (batch_size, action_size), bool
 
             # push results (make sure shapes are (batch_size,))
-            buffer.push(
+            self.buffer.push(
                 masks = mask, # (batch_size,)
                 log_probs = log_prob, # (batch_size,)
                 entropies = entropy, # (batch_size,)
@@ -150,22 +154,22 @@ class BatchMaskA2C:
 
             # update mask and dones
             # note: the order of the following two lines is crucial
-            dones = np.logical_or(dones, done)
-            mask = (1 - torch.Tensor(dones)) # keep 0 once a batch is done
+            dones = np.logical_or(dones, done) # the value stays at True once it turns to True
+            mask = (1 - torch.Tensor(dones)) # set mask to 0 once a batch is done
 
         # process the last timestep
         value = torch.zeros((self.batch_size,)) # zero padding for the last time step
-        buffer.push(values = value) # push value for the last time step
+        self.buffer.push(values = value) # push value for the last time step
 
-        # reformat rollout data into (batch_size, seq_len) and mask finished time steps
-        buffer.reformat()
+        # reformat rollout data into (batch_size, seq_len) and mask time steps for finished episodes
+        self.buffer.reformat()
 
         # update model
-        losses_batch = self.update_model(buffer)
+        losses_batch = self.update_model()
 
-        # compute reward and length of the epiosde
-        episode_length = buffer.rollout['masks'].sum(axis = 1).mean(axis = 0)
-        episode_reward = (buffer.rollout['rewards'] * buffer.rollout['masks']).sum(axis = 1).mean(axis = 0)
+        # compute average reward and length of episodes in the batch
+        episode_length = self.buffer.rollout['masks'].sum(axis = 1).mean(axis = 0)
+        episode_reward = self.buffer.rollout['rewards'].sum(axis = 1).mean(axis = 0)
 
         # wrap training data for the batch
         data_batch = losses_batch.copy()
@@ -257,7 +261,7 @@ class BatchMaskA2C:
             advantages: a torch.Tensor with shape (batch_size, seq_len).
         """
 
-        # get sequence length (max sequence length among batches)
+        # get sequence length
         seq_len = rewards.shape[1]
 
         # initialize recordings
